@@ -516,3 +516,6 @@ C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-wind
 C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-windows10.0.19041.0\win-x64\qualifiers.txt
 C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-windows10.0.19041.0\win-x64\qualifiers.txt.intermediate
 C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-windows10.0.19041.0\win-x64\MultipleQualifiersPerDimensionFound.txt
+C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-windows10.0.19041.0\win-x64\SmartBox.sourcelink.json
+C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\bin\Debug\net10.0-windows10.0.19041.0\win-x64\download.scale-100.png
+C:\Users\jerem\OneDrive\Documents\Senior Project\SmartBox\obj\Debug\net10.0-windows10.0.19041.0\win-x64\resizetizer\r\download.scale-100.png
