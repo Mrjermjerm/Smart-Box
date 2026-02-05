@@ -4,28 +4,16 @@
              x:Class="SmartBox.MainPage">
 
     <ScrollView>
-        <VerticalStackLayout
-            Padding="50,10"
-            Spacing="25">
-            <Image
-                Source="download.png"
-                HeightRequest="165"
-                Aspect="AspectFit"
-                SemanticProperties.Description="dot net bot in a submarine number ten" />
+        <VerticalStackLayout Padding="20" Spacing="20">
 
-            <Label
-                Text="Hello, World!&#10; Wellcome to Smart Box"
-                Style="{StaticResource Headline}"
-                SemanticProperties.HeadingLevel="Level1" />
+            <Label Text="Welcome to SmartBox" FontSize="24" />
 
-            <Label />
-            
-            <Label
-                x:Name="SmartBoxDisplay"
-                Style="{StaticResource SubHeadline}"
-                SemanticProperties.HeadingLevel="Level2" />
+            <Label x:Name="SmartBoxDisplay" FontSize="18" Text="Checking devices..." />
 
-
+            <Entry x:Name="SSIDEntry" Placeholder="Wi-Fi SSID" />
+            <Entry x:Name="PasswordEntry" Placeholder="Wi-Fi Password" IsPassword="True" />
+            <Button Text="Send Wi-Fi Credentials" Clicked="OnSendWifiClicked" />
+            <Label x:Name="WifiStatusLabel" Text="Status: " FontSize="16" />
 
         </VerticalStackLayout>
     </ScrollView>

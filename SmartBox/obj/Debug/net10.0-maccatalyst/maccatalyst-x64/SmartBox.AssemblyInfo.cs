@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SmartBox")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0+ee0beafbe8f1c8a42a0ef4fa1a25486db591d76b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0+7ce3e9b860efb1bbf1c4906a1218265e7fbed3fa")]
 [assembly: System.Reflection.AssemblyProductAttribute("SmartBox")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SmartBox")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
