@@ -1,0 +1,562 @@
+
+
+from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
+import os
+import hashlib
+import subprocess
+import re
+import requests
+from datetime import datetime
+from flask import has_request_context
+from flask import send_file
+from io import BytesIO
+
+
+app = Flask(__name__)
+app.secret_key = "super-secret-fixed-key-change-this"
+
+user_file = "users.txt"
+nickname_file = "nicknames.txt"
+log_file = "activity.log"
+
+
+# -------------------------
+# NICKNAME STORAGE
+# -------------------------
+def load_nicknames():
+    nicknames = {}
+    if not os.path.exists(nickname_file):
+        return nicknames
+    with open(nickname_file, "r") as f:
+        for line in f:
+            if ":" in line:
+                mac, nickname = line.strip().split(":", 1)
+                nicknames[mac] = nickname
+    return nicknames
+
+def save_nickname(mac, nickname):
+    nicknames = load_nicknames()
+    nicknames[mac] = nickname
+    with open(nickname_file, "w") as f:
+        for m, n in nicknames.items():
+            f.write(f"{m}:{n}\n")
+
+# -------------------------
+# ACTIVITY LOGGING
+# -------------------------
+def write_log(action, details=""):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if has_request_context():
+        user = session.get("user", "SYSTEM")
+        ip_address = request.remote_addr
+    else:
+        user = "SYSTEM"
+        ip_address = "LOCAL"
+
+    log_entry = f"{timestamp} | User: {user} | IP: {ip_address} | Action: {action} | Details: {details}\n"
+
+    with open(log_file, "a") as f:
+        f.write(log_entry)
+
+def read_logs(action=None, user=None, ip=None):
+    if not os.path.exists(log_file):
+        return []
+
+    filtered_logs = []
+
+    with open(log_file, "r") as f:
+        for line in f:
+            if action and f"Action: {action}" not in line:
+                continue
+            if user and f"User: {user}" not in line:
+                continue
+            if ip and f"IP: {ip}" not in line:
+                continue
+            filtered_logs.append(line)
+
+    return filtered_logs[::-1]  # newest first
+
+def get_log_filter_options():
+    actions = set()
+    users = set()
+    ips = set()
+
+    if not os.path.exists(log_file):
+        return actions, users, ips
+
+    with open(log_file, "r") as f:
+        for line in f:
+            if "Action:" in line:
+                actions.add(line.split("Action:")[1].split("|")[0].strip())
+            if "User:" in line:
+                users.add(line.split("User:")[1].split("|")[0].strip())
+            if "IP:" in line:
+                ips.add(line.split("IP:")[1].split("|")[0].strip())
+
+    return sorted(actions), sorted(users), sorted(ips)
+
+# -------------------------
+# ARP NETWORK SCAN
+# -------------------------
+def arp_scan():
+    result = subprocess.run(["arp", "-a"], capture_output=True, text=True)
+    devices = []
+    for line in result.stdout.splitlines():
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([-\w]+)\s+dynamic", line)
+        if match:
+            devices.append({"ip": match.group(1), "mac": match.group(2)})
+    return devices
+
+# -------------------------
+# TASMOTA CONTROL
+# -------------------------
+def tasmota_power(ip, action):
+    """Send Power ON/OFF command to Tasmota device"""
+    try:
+        r = requests.get(f"http://{ip}/cm?cmnd=Power%20{action}", timeout=2)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"Tasmota request failed for {ip}: {e}")
+    return None
+
+# -------------------------
+# PASSWORD HASHING
+# -------------------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def user_exists(username):
+    if not os.path.exists(user_file):
+        return False
+    with open(user_file, "r") as f:
+        return any(line.startswith(f"{username}:") for line in f)
+
+def verify_user(username, password):
+    if not os.path.exists(user_file):
+        return False
+    hashed = hash_password(password)
+    with open(user_file, "r") as f:
+        for line in f:
+            if line.strip() == f"{username}:{hashed}":
+                return True
+    return False
+
+# -------------------------
+# ROUTES
+# -------------------------
+@app.route("/")
+def home():
+    return render_template_string("""
+        <h1>Welcome</h1>
+        <a href="/login"><button>Login</button></a>
+        <a href="/register"><button>Register</button></a>
+    """)
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        if user_exists(username):
+            return "User already exists"
+        with open(user_file, "a") as f:
+            f.write(f"{username}:{hash_password(password)}\n")
+        return redirect(url_for("login"))
+    return render_template_string("""
+        <h2>Register</h2>
+        <form method="POST">
+            <input name="username" placeholder="Username" required><br><br>
+            <input name="password" type="password" placeholder="Password" required><br><br>
+            <button type="submit">Register</button>
+        </form>
+        <br>
+        <a href="/">Back</a>
+    """)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        if verify_user(username, password):
+            session["user"] = username
+            write_log("LOGIN_SUCCESS")
+            return redirect(url_for("dashboard"))
+        write_log("LOGIN_FAILED", f"Attempted username: {username}")
+        return "Login failed"
+    return render_template_string("""
+        <h2>Login</h2>
+        <form method="POST">
+            <input name="username" placeholder="Username" required><br><br>
+            <input name="password" type="password" placeholder="Password" required><br><br>
+            <button type="submit">Login</button>
+        </form>
+        <br>
+        <a href="/">Back</a>
+    """)
+
+@app.route("/dashboard")
+def dashboard():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    return f"""
+        <h1>Welcome {session['user']}</h1>
+        <a href="/scan"><button>Scan Network</button></a>
+        <a href="/wifi"><button>Wi-Fi Setup</button></a>
+        <a href="/logs"><button>View Logs</button></a>
+        <a href="/logout"><button>Logout</button></a>
+    """
+
+@app.route("/logout")
+def logout():
+    write_log("LOGOUT")
+    session.pop("user", None)
+    return redirect(url_for("home"))
+
+@app.route("/logs")
+def logs():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    selected_action = request.args.get("action")
+    selected_user = request.args.get("user")
+    selected_ip = request.args.get("ip")
+
+    actions, users, ips = get_log_filter_options()
+
+    logs = read_logs(
+        action=selected_action if selected_action else None,
+        user=selected_user if selected_user else None,
+        ip=selected_ip if selected_ip else None
+    )
+
+    return render_template_string("""
+        <h2>System Activity Logs</h2>
+
+        <form method="GET">
+            <label>Action:</label>
+            <select name="action">
+                <option value="">All</option>
+                {% for a in actions %}
+                    <option value="{{ a }}" {% if a == selected_action %}selected{% endif %}>
+                        {{ a }}
+                    </option>
+                {% endfor %}
+            </select>
+
+            <label>User:</label>
+            <select name="user">
+                <option value="">All</option>
+                {% for u in users %}
+                    <option value="{{ u }}" {% if u == selected_user %}selected{% endif %}>
+                        {{ u }}
+                    </option>
+                {% endfor %}
+            </select>
+
+            <label>IP:</label>
+            <select name="ip">
+                <option value="">All</option>
+                {% for i in ips %}
+                    <option value="{{ i }}" {% if i == selected_ip %}selected{% endif %}>
+                        {{ i }}
+                    </option>
+                {% endfor %}
+            </select>
+
+            <button type="submit">Filter</button>
+                                  
+            <a href="/logs/export?{{ request.query_string.decode() }}">
+            <button type="button">Export Logs</button>
+            </a>
+                                  
+            <a href="/logs">Clear</a>
+        </form>
+
+        <br>
+
+        <table border="1" cellpadding="5">
+            <tr>
+                <th>Timestamp | User | IP | Action | Details</th>
+            </tr>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+
+        <br>
+        <a href="/dashboard">Back to Dashboard</a>
+    """,
+    logs=logs,
+    actions=actions,
+    users=users,
+    ips=ips,
+    selected_action=selected_action,
+    selected_user=selected_user,
+    selected_ip=selected_ip
+    )
+
+@app.route("/logs/export")
+def export_logs():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    action = request.args.get("action")
+    user_filter = request.args.get("user")
+    ip = request.args.get("ip")
+
+    logs = read_logs(
+        action=action if action else None,
+        user=user_filter if user_filter else None,
+        ip=ip if ip else None
+    )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"activity_logs_{timestamp}.log"
+
+    # Build file in memory
+    buffer = BytesIO()
+    for log in logs[::-1]:  # oldest → newest
+        buffer.write(log.encode("utf-8"))
+
+    buffer.seek(0)
+
+    write_log(
+        "LOG_EXPORT",
+        f"Exported logs | Action={action or 'ALL'} | User={user_filter or 'ALL'} | IP={ip or 'ALL'}"
+    )
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="text/plain"
+    )
+
+# -------------------------
+# NETWORK SCAN PAGE + TASMOTA
+# -------------------------
+@app.route("/scan")
+def scan():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    devices = arp_scan()
+    nicknames = load_nicknames()
+
+    # Detect Tasmota devices
+    for device in devices:
+        ip = device["ip"]
+        try:
+            resp = requests.get(f"http://{ip}/cm?cmnd=Power", timeout=2)
+            device["tasmota"] = resp.status_code == 200 and "POWER" in resp.text
+        except:
+            device["tasmota"] = False
+
+    return render_template_string("""
+        <h2>Network Devices</h2>
+        <table border="1" cellpadding="8">
+            <tr>
+                <th>Nickname</th>
+                <th>IP Address</th>
+                <th>MAC Address</th>
+                <th>Tasmota?</th>
+                <th>Set Nickname</th>
+                <th>Action</th>
+            </tr>
+            {% for device in devices %}
+            <tr>
+                <td>{{ nicknames.get(device.mac, "Unknown") }}</td>
+                <td>{{ device.ip }}</td>
+                <td>{{ device.mac }}</td>
+                <td>{{ "Yes" if device.tasmota else "No" }}</td>
+                <td>
+                    <form method="POST" action="/set_nickname">
+                        <input type="hidden" name="mac" value="{{ device.mac }}">
+                        <input name="nickname" placeholder="Enter nickname" required>
+                        <button type="submit">Save</button>
+                    </form>
+                </td>
+                <td>
+                    {% if device.tasmota %}
+                        <form method="POST" action="/smartplug_action">
+                            <input type="hidden" name="ip" value="{{ device.ip }}">
+                            <select name="action">
+                                <option value="ON">ON</option>
+                                <option value="OFF">OFF</option>
+                                <option value="RESTART">RESTART (10s cycle)</option>
+                            </select>
+                            <button type="submit">Send</button>
+                        </form>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+        <br>
+        <a href="/dashboard">Back to Dashboard</a>
+    """, devices=devices, nicknames=nicknames)
+
+@app.route("/set_nickname", methods=["POST"])
+def set_nickname():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    mac = request.form["mac"]
+    nickname = request.form["nickname"]
+    save_nickname(mac, nickname)
+    write_log("SET_NICKNAME", f"MAC: {mac}, Nickname: {nickname}")
+    return redirect(url_for("scan"))
+
+@app.route("/smartplug_action", methods=["POST"])
+def smartplug_action():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    ip = request.form["ip"]
+    action = request.form["action"]
+
+    if action == "RESTART":
+        tasmota_restart(ip, 10)
+        write_log("SMARTPLUG_RESTART", f"IP: {ip}")
+    else:
+        tasmota_power(ip, action)
+        write_log(f"SMARTPLUG_{action}", f"IP: {ip}")
+
+    return redirect(url_for("scan"))
+
+# -------------------------
+# WIFI SCAN & CONNECT (Linux)
+# -------------------------
+def scan_wifi_linux(interface='wlan0'):
+    try:
+        result = subprocess.check_output(['sudo', 'iwlist', interface, 'scan'], encoding='utf-8')
+    except subprocess.CalledProcessError as e:
+        print(f"Error scanning Wi-Fi: {e}")
+        return []
+
+    networks = []
+    ssid_pattern = re.compile(r'ESSID:"(.*?)"')
+    signal_pattern = re.compile(r'Signal level=(-\d+ dBm)')
+
+    for line in result.split('\n'):
+        line = line.strip()
+        ssid_match = ssid_pattern.search(line)
+        signal_match = signal_pattern.search(line)
+
+        if ssid_match:
+            current_ssid = ssid_match.group(1)
+            if current_ssid and not any(n['ssid'] == current_ssid for n in networks):
+                networks.append({"ssid": current_ssid, "signal": "N/A"})
+        if signal_match and networks:
+            networks[-1]["signal"] = signal_match.group(1)
+
+    return networks
+
+def connect_wifi_linux(ssid, password=None):
+    subprocess.run(["sudo", "nmcli", "connection", "delete", ssid], capture_output=True)
+    cmd = ["sudo", "nmcli", "device", "wifi", "connect", ssid]
+    if password:
+        cmd += ["password", password]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to connect: {e.stderr}")
+        return False
+
+@app.route("/wifi", methods=["GET", "POST"])
+def wifi():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        ssid = request.form["ssid"]
+        password = request.form.get("password", "")
+        success = connect_wifi_linux(ssid, password)
+        if success:
+            write_log("WIFI_CONNECTED", f"SSID: {ssid}")
+            return f"Connected to {ssid} successfully! <br><a href='/dashboard'>Back to Dashboard</a>"
+        else:
+            write_log("WIFI_CONNECTION_FAILED", f"SSID: {ssid}")
+            return f"Failed to connect to {ssid}. Check password. <br><a href='/wifi'>Try Again</a>"
+
+    networks = scan_wifi_linux()
+    return render_template_string("""
+        <h2>Available Wi-Fi Networks</h2>
+        <form method="POST">
+            <select name="ssid" required>
+                {% for net in networks %}
+                    <option value="{{ net['ssid'] }}">{{ net['ssid'] }} ({{ net['signal'] }})</option>
+                {% endfor %}
+            </select><br><br>
+            <input name="password" type="password" placeholder="Wi-Fi Password"><br><br>
+            <button type="submit">Connect</button>
+        </form>
+        <br>
+        <a href="/dashboard">Back to Dashboard</a>
+    """, networks=networks)
+
+# -------------------------
+# TASMOTA RESTART (PulseTime)
+# -------------------------
+def tasmota_restart(ip, seconds=10):
+    """
+    Power cycle plug using Tasmota PulseTime
+    """
+    try:
+        # Turn ON
+        requests.get(f"http://{ip}/cm?cmnd=Power%20On", timeout=2)
+        # Set auto-off timer
+        r = requests.get(f"http://{ip}/cm?cmnd=PulseTime%20{seconds}", timeout=2)
+        return r.json()
+    except Exception as e:
+        print(f"Restart failed for {ip}: {e}")
+        return None
+
+# HOTSPOT
+def wifi_is_connected():
+    """Check if Raspberry Pi is connected to Wi-Fi/internet"""
+    try:
+        subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], stderr=subprocess.DEVNULL)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    
+def enable_hotspot(ssid="SmartBox-AP", password="smartbox123"):
+    """
+    Enables a Wi-Fi hotspot on the Pi using nmcli.
+    """
+    # Delete previous hotspot if exists
+    subprocess.run(["sudo", "nmcli", "connection", "delete", ssid], capture_output=True)
+    
+    # Create hotspot
+    cmd = [
+        "sudo", "nmcli", "device", "wifi", "hotspot",
+        "ifname", "wlan0",
+        "con-name", ssid,
+        "ssid", ssid,
+        "password", password
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to start hotspot: {e.stderr}")
+        return False
+
+if __name__ == "__main__":
+    # Check Wi-Fi first
+    if not wifi_is_connected():
+        print("Wi-Fi down. Enabling hotspot...")
+        enable_hotspot()
+        write_log("HOTSPOT_ENABLED")
+    else:
+        print("Wi-Fi is connected.")
+
+    app.run(debug=True, host="0.0.0.0")
