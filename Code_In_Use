@@ -1,5 +1,6 @@
 
 
+
 from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
 import os
 import hashlib
@@ -29,12 +30,19 @@ def load_nicknames():
         return nicknames
     with open(nickname_file, "r") as f:
         for line in f:
-            if ":" in line:
-                mac, nickname = line.strip().split(":", 1)
-                nicknames[mac] = nickname
+            line = line.strip()
+            if not line:
+                continue
+            # split on the last colon
+            parts = line.rsplit(":", 1)
+            if len(parts) != 2:
+                continue
+            mac, nickname = parts
+            nicknames[mac.lower()] = nickname
     return nicknames
 
 def save_nickname(mac, nickname):
+    mac = mac.lower()
     nicknames = load_nicknames()
     nicknames[mac] = nickname
     with open(nickname_file, "w") as f:
@@ -100,12 +108,23 @@ def get_log_filter_options():
 # ARP NETWORK SCAN
 # -------------------------
 def arp_scan():
-    result = subprocess.run(["arp", "-a"], capture_output=True, text=True)
+
+    result = subprocess.run(
+        ["sudo", "arp-scan", "--localnet"],
+        capture_output=True,
+        text=True
+    )
+
     devices = []
+
     for line in result.stdout.splitlines():
-        match = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([-\w]+)\s+dynamic", line)
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f:]{17})", line)
         if match:
-            devices.append({"ip": match.group(1), "mac": match.group(2)})
+            devices.append({
+                "ip": match.group(1),
+                "mac": match.group(2).lower()
+            })
+
     return devices
 
 # -------------------------
@@ -135,13 +154,32 @@ def user_exists(username):
 
 def verify_user(username, password):
     if not os.path.exists(user_file):
-        return False
+        return None
+
     hashed = hash_password(password)
+
     with open(user_file, "r") as f:
         for line in f:
-            if line.strip() == f"{username}:{hashed}":
-                return True
-    return False
+            parts = line.strip().split(":")
+            if len(parts) != 3:
+                continue
+
+            u, p, role = parts
+
+            if u == username and p == hashed:
+                return role
+
+    return None
+
+
+
+# -------------------------
+# User Roles
+# -------------------------
+
+def is_admin():
+    return session.get("role") == "admin"
+
 
 # -------------------------
 # ROUTES
@@ -161,16 +199,44 @@ def register():
         password = request.form["password"]
         if user_exists(username):
             return "User already exists"
+        
+        role = request.form.get("role", "user")
+        admin_key = request.form.get("adminkey", "")
+
+        ADMIN_SECRET = "1234"  
+
+        # Prevent unauthorized admin creation
+        if role == "admin":
+            if admin_key != ADMIN_SECRET:
+                return "Invalid admin key"
+
         with open(user_file, "a") as f:
-            f.write(f"{username}:{hash_password(password)}\n")
+            f.write(f"{username}:{hash_password(password)}:{role}\n")
         return redirect(url_for("login"))
     return render_template_string("""
         <h2>Register</h2>
         <form method="POST">
-            <input name="username" placeholder="Username" required><br><br>
-            <input name="password" type="password" placeholder="Password" required><br><br>
-            <button type="submit">Register</button>
+
+        <input name="username" placeholder="Username" required><br><br>
+
+        <input name="password" type="password" placeholder="Password" required><br><br>
+
+        <label>Role:</label>
+        <select name="role">
+            <option value="user">Standard User</option>
+            <option value="admin">Administrator</option>
+        </select>
+
+        <br><br>
+
+        <input name="adminkey" type="password" placeholder="Admin Key (only for admins)">
+
+        <br><br>
+
+        <button type="submit">Register</button>
+
         </form>
+
         <br>
         <a href="/">Back</a>
     """)
@@ -180,8 +246,11 @@ def login():
     if request.method == "POST":
         username = request.form["username"]
         password = request.form["password"]
-        if verify_user(username, password):
+
+        role = verify_user(username, password)
+        if role:
             session["user"] = username
+            session["role"] = role
             write_log("LOGIN_SUCCESS")
             return redirect(url_for("dashboard"))
         write_log("LOGIN_FAILED", f"Attempted username: {username}")
@@ -204,8 +273,8 @@ def dashboard():
     return f"""
         <h1>Welcome {session['user']}</h1>
         <a href="/scan"><button>Scan Network</button></a>
-        <a href="/wifi"><button>Wi-Fi Setup</button></a>
-        <a href="/logs"><button>View Logs</button></a>
+        {"<a href='/wifi'><button>Wi-Fi Setup</button></a>" if session.get("role") == "admin" else ""}
+        {"<a href='/logs'><button>View Logs</button></a>" if session.get("role") == "admin" else ""}
         <a href="/logout"><button>Logout</button></a>
     """
 
@@ -370,7 +439,7 @@ def scan():
             </tr>
             {% for device in devices %}
             <tr>
-                <td>{{ nicknames.get(device.mac, "Unknown") }}</td>
+                <td>{{ nicknames.get(device.mac.lower(), "Unknown") }}</td>
                 <td>{{ device.ip }}</td>
                 <td>{{ device.mac }}</td>
                 <td>{{ "Yes" if device.tasmota else "No" }}</td>
@@ -400,7 +469,8 @@ def scan():
             {% endfor %}
         </table>
         <br>
-        <a href="/dashboard">Back to Dashboard</a>
+        <a href="/dashboard"><button>Back to Dashboard</button></a>
+        <a href="/scan"><button>Scan Again</button></a>
     """, devices=devices, nicknames=nicknames)
 
 @app.route("/set_nickname", methods=["POST"])
@@ -422,6 +492,9 @@ def smartplug_action():
     action = request.form["action"]
 
     if action == "RESTART":
+        if not is_admin():
+            return "Restart requires admin privileges"
+        
         tasmota_restart(ip, 10)
         write_log("SMARTPLUG_RESTART", f"IP: {ip}")
     else:
@@ -433,28 +506,24 @@ def smartplug_action():
 # -------------------------
 # WIFI SCAN & CONNECT (Linux)
 # -------------------------
-def scan_wifi_linux(interface='wlan0'):
+def scan_wifi_linux():
     try:
-        result = subprocess.check_output(['sudo', 'iwlist', interface, 'scan'], encoding='utf-8')
-    except subprocess.CalledProcessError as e:
-        print(f"Error scanning Wi-Fi: {e}")
+        result = subprocess.check_output(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL", "dev", "wifi"],
+            encoding="utf-8"
+        )
+    except subprocess.CalledProcessError:
         return []
 
     networks = []
-    ssid_pattern = re.compile(r'ESSID:"(.*?)"')
-    signal_pattern = re.compile(r'Signal level=(-\d+ dBm)')
 
-    for line in result.split('\n'):
-        line = line.strip()
-        ssid_match = ssid_pattern.search(line)
-        signal_match = signal_pattern.search(line)
-
-        if ssid_match:
-            current_ssid = ssid_match.group(1)
-            if current_ssid and not any(n['ssid'] == current_ssid for n in networks):
-                networks.append({"ssid": current_ssid, "signal": "N/A"})
-        if signal_match and networks:
-            networks[-1]["signal"] = signal_match.group(1)
+    for line in result.splitlines():
+        parts = line.split(":")
+        if len(parts) == 2:
+            networks.append({
+                "ssid": parts[0],
+                "signal": parts[1] + "%"
+            })
 
     return networks
 
@@ -474,6 +543,8 @@ def connect_wifi_linux(ssid, password=None):
 def wifi():
     if "user" not in session:
         return redirect(url_for("login"))
+    if not is_admin():
+        return "Access denied: Admins only"
 
     if request.method == "POST":
         ssid = request.form["ssid"]
@@ -528,7 +599,7 @@ def wifi_is_connected():
     except subprocess.CalledProcessError:
         return False
     
-def enable_hotspot(ssid="SmartBox-AP", password="smartbox123"):
+def enable_hotspot(ssid="SmartBox-AP", password="12345678"):
     """
     Enables a Wi-Fi hotspot on the Pi using nmcli.
     """
@@ -550,13 +621,6 @@ def enable_hotspot(ssid="SmartBox-AP", password="smartbox123"):
         print(f"Failed to start hotspot: {e.stderr}")
         return False
 
-if __name__ == "__main__":
-    # Check Wi-Fi first
-    if not wifi_is_connected():
-        print("Wi-Fi down. Enabling hotspot...")
-        enable_hotspot()
-        write_log("HOTSPOT_ENABLED")
-    else:
-        print("Wi-Fi is connected.")
 
-    app.run(debug=True, host="0.0.0.0")
+if __name__ == "__main__":
+     app.run(host="0.0.0.0", port=8080)
