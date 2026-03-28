@@ -8,7 +8,7 @@ HOTSPOT_SSID="SmartBox-AP"
 HOTSPOT_PASS="12345678"
 
 # Preferred Wi-Fi networks
-PREFERRED_SSIDS=("Tigercorn" "Finniganfortuna6")
+PREFERRED_SSIDS=("network" "password")
 
 # Give Wi-Fi interface some time to be ready
 sleep 10
