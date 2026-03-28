@@ -11,10 +11,12 @@ from datetime import datetime
 from flask import has_request_context
 from flask import send_file
 from io import BytesIO
+import threading
+import time
 
 
 app = Flask(__name__)
-app.secret_key = "super-secret-fixed-key-change-this"
+app.secret_key = "1234"
 
 user_file = "users.txt"
 nickname_file = "nicknames.txt"
@@ -528,8 +530,7 @@ def scan_wifi_linux():
     return networks
 
 def connect_wifi_linux(ssid, password=None):
-    subprocess.run(["sudo", "nmcli", "connection", "delete", ssid], capture_output=True)
-    cmd = ["sudo", "nmcli", "device", "wifi", "connect", ssid]
+    cmd = ["sudo", "/home/smartbox/connect_wifi.sh", ssid, password]
     if password:
         cmd += ["password", password]
     try:
@@ -594,10 +595,13 @@ def tasmota_restart(ip, seconds=10):
 def wifi_is_connected():
     """Check if Raspberry Pi is connected to Wi-Fi/internet"""
     try:
-        subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], stderr=subprocess.DEVNULL)
-        return True
+        output = subprocess.check_output(["iwgetid"], stderr=subprocess.DEVNULL).decode()
+        return "ESSID" in output
     except subprocess.CalledProcessError:
         return False
+    
+def disable_hotspot(ssid="SmartBox-AP"):
+    subprocess.run(["sudo", "nmcli", "connection", "down", ssid], capture_output=True)
     
 def enable_hotspot(ssid="SmartBox-AP", password="12345678"):
     """
@@ -621,6 +625,62 @@ def enable_hotspot(ssid="SmartBox-AP", password="12345678"):
         print(f"Failed to start hotspot: {e.stderr}")
         return False
 
+def wifi_manager():
+    hotspot_on = hotspot_is_active()
+
+    while True:
+        if wifi_is_connected():
+            print("Connected to WiFi")
+
+            if hotspot_on:
+                print("Turning OFF hotspot")
+                disable_hotspot()
+                hotspot_on = False
+
+        else:
+            print("No WiFi connection")
+
+            networks = scan_wifi_linux()
+            available_ssids = [n["ssid"] for n in networks]
+
+            print("Available networks:", available_ssids)
+
+            # Try reconnecting to known networks
+            for ssid in available_ssids:
+                print(f"Trying to connect to {ssid}...")
+                if connect_wifi_linux(ssid):
+                    print(f"Connected to {ssid}")
+                    hotspot_on = False
+                    break
+            else:
+                # If none worked → start hotspot
+                if not hotspot_on:
+                    print("Starting hotspot...")
+                    enable_hotspot()
+                    hotspot_on = True
+
+        time.sleep(120)
+
+def hotspot_is_active(ssid="SmartBox-AP"):
+    try:
+        output = subprocess.check_output(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+            encoding="utf-8"
+        )
+        for line in output.splitlines():
+            if line.startswith("yes:") and ssid in line:
+                return True
+        return False
+    except:
+        return False
+
 
 if __name__ == "__main__":
-     app.run(host="0.0.0.0", port=8080)
+    # Start WiFi manager in background
+    thread = threading.Thread(target=wifi_manager, daemon=True)
+    thread.start()
+
+    # Start Flask
+    app.run(host="0.0.0.0", port=8080)
+
+
