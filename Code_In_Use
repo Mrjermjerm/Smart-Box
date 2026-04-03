@@ -1,6 +1,5 @@
 
 
-
 from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
 import os
 import hashlib
@@ -640,26 +639,12 @@ def wifi_manager():
         else:
             print("No WiFi connection")
 
-            networks = scan_wifi_linux()
-            available_ssids = [n["ssid"] for n in networks]
+            if not hotspot_on:
+                print("Starting hotspot...")
+                enable_hotspot()
+                hotspot_on = True
 
-            print("Available networks:", available_ssids)
-
-            # Try reconnecting to known networks
-            for ssid in available_ssids:
-                print(f"Trying to connect to {ssid}...")
-                if connect_wifi_linux(ssid):
-                    print(f"Connected to {ssid}")
-                    hotspot_on = False
-                    break
-            else:
-                # If none worked → start hotspot
-                if not hotspot_on:
-                    print("Starting hotspot...")
-                    enable_hotspot()
-                    hotspot_on = True
-
-        time.sleep(120)
+        time.sleep(30)
 
 def hotspot_is_active(ssid="SmartBox-AP"):
     try:
@@ -682,5 +667,7 @@ if __name__ == "__main__":
 
     # Start Flask
     app.run(host="0.0.0.0", port=8080)
+
+
 
 
