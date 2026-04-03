@@ -3,38 +3,24 @@ Bash script in pi that allows nmcli to connect to wifi and disconnect from hotst
 
 #!/bin/bash
 
-# Hotspot credentials
 HOTSPOT_SSID="SmartBox-AP"
 HOTSPOT_PASS="12345678"
 
-# Preferred Wi-Fi networks
-PREFERRED_SSIDS=("network" "password")
-
-# Give Wi-Fi interface some time to be ready
+# Give system time to boot
 sleep 10
 
 while true; do
-    CONNECTED=false
+    # Check if connected to Wi-Fi
+    WIFI_CONNECTED=$(nmcli -t -f ACTIVE,TYPE dev | grep '^yes:wifi')
 
-    for SSID in "${PREFERRED_SSIDS[@]}"; do
-        if nmcli -t -f ACTIVE,SSID dev wifi | grep -q "^yes:$SSID"; then
-            CONNECTED=true
-            break
-        fi
+    if [ -z "$WIFI_CONNECTED" ]; then
+        echo "No Wi-Fi connection → enabling hotspot"
 
-        if nmcli dev wifi connect "$SSID" password "$SSID"; then
-            echo "Connected to Wi-Fi: $SSID"
-            CONNECTED=true
-            break
-        fi
-    done
-
-    if [ "$CONNECTED" = false ]; then
-        echo "No preferred Wi-Fi found, starting hotspot..."
         nmcli connection up "$HOTSPOT_SSID" >/dev/null 2>&1 || \
         nmcli device wifi hotspot ifname wlan0 con-name "$HOTSPOT_SSID" ssid "$HOTSPOT_SSID" password "$HOTSPOT_PASS" >/dev/null 2>&1
+
     else
-        echo "Wi-Fi is up, bringing down hotspot if active..."
+        echo "Wi-Fi connected → disabling hotspot"
         nmcli connection down "$HOTSPOT_SSID" >/dev/null 2>&1
     fi
 
